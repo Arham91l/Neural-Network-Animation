@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Neural Network Visualizer</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:system-ui,sans-serif;background:#0f1117;color:#e0e0e0;padding:20px;}
+h1{font-size:18px;font-weight:500;margin-bottom:4px;color:#fff;}
+.sub{font-size:12px;color:#888;margin-bottom:16px;}
+.top-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
+button{font-size:12px;padding:6px 14px;border-radius:6px;border:1px solid #333;background:#1a1d27;color:#ccc;cursor:pointer;}
+button:hover{background:#252836;}
+button.active{background:#185FA5;color:#fff;border-color:#185FA5;}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;}
+.metric{background:#1a1d27;border-radius:8px;padding:10px 14px;border:1px solid #222;}
+.metric-label{font-size:11px;color:#666;margin-bottom:4px;}
+.metric-val{font-size:22px;font-weight:500;color:#fff;transition:color 0.3s;}
+.metric-val.good{color:#1D9E75;}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.panel{background:#1a1d27;border-radius:10px;padding:14px;border:1px solid #222;}
+.panel-title{font-size:12px;color:#888;margin-bottom:10px;font-weight:500;}
+canvas{width:100%;display:block;}
+.code-block{font-family:monospace;font-size:12px;}
+.code-line{padding:4px 8px;border-radius:4px;cursor:pointer;line-height:1.9;color:#aaa;transition:background 0.15s;}
+.code-line:hover{background:#252836;}
+.code-line.active{background:#185FA5;color:#fff;}
+.val-box{margin-top:8px;background:#0f1117;border-radius:6px;padding:8px 10px;font-size:11px;font-family:monospace;color:#9FE1CB;min-height:36px;line-height:1.7;word-break:break-all;}
+.desc-box{margin-top:6px;font-size:11px;color:#888;line-height:1.6;min-height:32px;}
+.epoch-row{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
+.epoch-row label{font-size:12px;color:#888;white-space:nowrap;}
+#epochSlider{flex:1;accent-color:#185FA5;}
+.epoch-row span{font-size:12px;color:#ccc;min-width:100px;}
+.speed-row{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
+.speed-row label{font-size:12px;color:#888;}
+#speedSlider{width:120px;accent-color:#185FA5;}
+.speed-row span{font-size:12px;color:#ccc;min-width:40px;}
+.btn-row{display:flex;gap:8px;margin-bottom:16px;}
+@media(max-width:600px){.panels{grid-template-columns:1fr;}.metrics{grid-template-columns:repeat(2,1fr);}}
+</style>
+</head>
+<body>
+<h1>Neural Network — Animated Visualizer</h1>
+<div class="sub">3-layer network · Output = 1 if sum of 4 binary inputs ≥ 3 · 10,000 epochs</div>
+
+<div class="btn-row">
+  <button id="btnPlay" onclick="togglePlay()">▶ Play</button>
+  <button id="btnFwd" class="active" onclick="setMode('forward')">Forward pass</button>
+  <button id="btnBwd" onclick="setMode('backward')">Backward pass</button>
+  <button id="btnLoss" onclick="setMode('loss')">Loss curve</button>
+</div>
+
+<div class="speed-row">
+  <label>Speed</label>
+  <input type="range" id="speedSlider" min="1" max="20" value="5" oninput="updateSpeed(this.value)">
+  <span id="speedLabel">5×</span>
+</div>
+
+<div class="epoch-row">
+  <label>Epoch</label>
+  <input type="range" id="epochSlider" min="0" max="99" value="0" step="1" oninput="seekTo(this.value)">
+  <span id="epochLabel">1 / 10,000</span>
+</div>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-label">Loss</div><div class="metric-val" id="mLoss">—</div></div>
+  <div class="metric"><div class="metric-label">Accuracy</div><div class="metric-val" id="mAcc">—</div></div>
+  <div class="metric"><div class="metric-label">Correct / 16</div><div class="metric-val" id="mCorrect">—</div></div>
+  <div class="metric"><div class="metric-label">Epoch</div><div class="metric-val" id="mEpoch">—</div></div>
+</div>
+
+<div class="panels">
+  <div class="panel">
+    <div class="panel-title">Network — activations for sample 0</div>
+    <canvas id="netCanvas" height="220"></canvas>
+  </div>
+  <div class="panel" id="rightPanel">
+    <div class="panel-title" id="rightTitle">Forward pass</div>
+    <div id="rightContent"></div>
+  </div>
+</div>
+
+<script>
+// ── Data ─────────────────────────────────────────────────────────────────────
+const Xd=[[0,0,0,0],[0,0,0,1],[0,0,1,0],[0,0,1,1],[0,1,0,0],[0,1,0,1],[0,1,1,0],[0,1,1,1],[1,0,0,0],[1,0,0,1],[1,0,1,0],[1,0,1,1],[1,1,0,0],[1,1,0,1],[1,1,1,0],[1,1,1,1]];
+const yd=[[0],[0],[0],[0],[0],[0],[0],[1],[0],[0],[0],[1],[0],[1],[1],[1]];
+
+// ── Math helpers ──────────────────────────────────────────────────────────────
+function mm(A,B){const r=A.length,k=A[0].length,c=B[0].length,C=Array.from({length:r},()=>new Array(c).fill(0));for(let i=0;i<r;i++)for(let j=0;j<c;j++)for(let p=0;p<k;p++)C[i][j]+=A[i][p]*B[p][j];return C;}
+function addB(A,b){return A.map(r=>r.map((v,j)=>v+b[0][j]));}
+function relu(A){return A.map(r=>r.map(v=>Math.max(0,v)));}
+function sig(A){return A.map(r=>r.map(v=>1/(1+Math.exp(-v))));}
+function sub(A,B){return A.map((r,i)=>r.map((v,j)=>v-B[i][j]));}
+function T(A){return A[0].map((_,j)=>A.map(r=>r[j]));}
+function sc(A,s){return A.map(r=>r.map(v=>v*s));}
+function rg(Z){return Z.map(r=>r.map(v=>v>0?1:0));}
+function had(A,B){return A.map((r,i)=>r.map((v,j)=>v*B[i][j]));}
+function sumC(A){return [A[0].map((_,j)=>A.reduce((s,r)=>s+r[j],0))];}
+function sumA(A){return A.reduce((s,r)=>s+r.reduce((a,v)=>a+v,0),0);}
+function cp(A){return A.map(r=>[...r]);}
+
+// ── Training ──────────────────────────────────────────────────────────────────
+function train(){
+  let rng=(s=>{let x=s;return()=>{x=(x*9301+49297)%233280;return x/233280-0.5;};})(42);
+  let w1=Array.from({length:4},()=>[rng(),rng(),rng(),rng()].map(v=>v*1));
+  let b1=[[0,0,0,0]],w2=Array.from({length:4},()=>[rng(),rng(),rng()].map(v=>v*1));
+  let b2=[[0,0,0]],w3=Array.from({length:3},()=>[rng()]);
+  let b3=[[0]];
+  const lr=0.1,n=16,snaps=[];
+  for(let ep=0;ep<10000;ep++){
+    const z1=addB(mm(Xd,w1),b1),a1=relu(z1);
+    const z2=addB(mm(a1,w2),b2),a2=relu(z2);
+    const z3=addB(mm(a2,w3),b3),a3=sig(z3);
+    const loss=-sumA(yd.map((r,i)=>r.map((v,j)=>v*Math.log(a3[i][j]+1e-8)+(1-v)*Math.log(1-a3[i][j]+1e-8))))/n;
+    const err=sub(a3,yd);
+    const dw3=sc(mm(T(a2),err),1/n),db3=sumA(err)/n;
+    const da2=mm(err,T(w3)),dz2=had(da2,rg(z2));
+    const dw2=sc(mm(T(a1),dz2),1/n),db2=sc(sumC(dz2),1/n);
+    const da1=mm(dz2,T(w2)),dz1=had(da1,rg(z1));
+    const dw1=sc(mm(T(Xd),dz1),1/n),db1=sc(sumC(dz1),1/n);
+    w3=w3.map((r,i)=>r.map((v,j)=>v-lr*dw3[i][j]));b3=[[b3[0][0]-lr*db3]];
+    w2=w2.map((r,i)=>r.map((v,j)=>v-lr*dw2[i][j]));b2=b2.map((r,i)=>r.map((v,j)=>v-lr*db2[i][j]));
+    w1=w1.map((r,i)=>r.map((v,j)=>v-lr*dw1[i][j]));b1=b1.map((r,i)=>r.map((v,j)=>v-lr*db1[i][j]));
+    if(ep%100===0||ep===9999){
+      const preds=a3.map(r=>r[0]>=0.5?1:0);
+      const correct=preds.filter((p,i)=>p===yd[i][0]).length;
+      snaps.push({ep:ep+1,loss,correct,z1:cp(z1),a1:cp(a1),z2:cp(z2),a2:cp(a2),z3:cp(z3),a3:cp(a3),dw1:cp(dw1),dw2:cp(dw2),dw3:cp(dw3),db3});
+    }
+  }
+  return snaps;
+}
+
+const SNAPS=train();
+let idx=0,playing=false,timer=null,speed=5,mode='forward',selLine=0;
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+function togglePlay(){
+  playing=!playing;
+  document.getElementById('btnPlay').textContent=playing?'⏸ Pause':'▶ Play';
+  if(playing) animate();
+  else clearTimeout(timer);
+}
+function animate(){
+  if(!playing) return;
+  idx=(idx+1)%SNAPS.length;
+  document.getElementById('epochSlider').value=idx;
+  render();
+  timer=setTimeout(animate,1000/speed);
+}
+function seekTo(v){
+  idx=parseInt(v);
+  if(playing){clearTimeout(timer);playing=false;document.getElementById('btnPlay').textContent='▶ Play';}
+  render();
+}
+function updateSpeed(v){speed=parseInt(v);document.getElementById('speedLabel').textContent=v+'×';}
+function setMode(m){
+  mode=m;selLine=0;
+  ['fwd','bwd','loss'].forEach(x=>document.getElementById('btn'+x.charAt(0).toUpperCase()+x.slice(1)).classList.remove('active'));
+  document.getElementById('btn'+{forward:'Fwd',backward:'Bwd',loss:'Loss'}[m]).classList.add('active');
+  render();
+}
+
+// ── Network canvas ────────────────────────────────────────────────────────────
+function drawNet(snap){
+  const cv=document.getElementById('netCanvas');
+  const W=cv.offsetWidth||400,H=220;
+  cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const layers=[
+    {vals:[Xd[0][0],Xd[0][1],Xd[0][2],Xd[0][3]],color:'#378ADD',name:'Input'},
+    {vals:snap.a1[0],color:'#1D9E75',name:'H1 (ReLU)'},
+    {vals:snap.a2[0],color:'#1D9E75',name:'H2 (ReLU)'},
+    {vals:[snap.a3[0][0]],color:'#BA7517',name:'Output'},
+  ];
+  const lx=[W*0.12,W*0.37,W*0.62,W*0.87];
+  const nodeR=Math.min(18,W*0.04);
+  const nodePos=(size,i)=>{const sp=H/(size+1);return sp*(i+1);};
+
+  // edges
+  layers.forEach((l,li)=>{
+    if(li===layers.length-1) return;
+    l.vals.forEach((_,ni)=>{
+      layers[li+1].vals.forEach((_,nj)=>{
+        ctx.beginPath();
+        ctx.moveTo(lx[li],nodePos(l.vals.length,ni));
+        ctx.lineTo(lx[li+1],nodePos(layers[li+1].vals.length,nj));
+        ctx.strokeStyle='#2a2d3a';ctx.lineWidth=0.8;ctx.stroke();
+      });
+    });
+  });
+
+  // nodes
+  layers.forEach((l,li)=>{
+    l.vals.forEach((v,ni)=>{
+      const cy=nodePos(l.vals.length,ni);
+      ctx.beginPath();
+      ctx.arc(lx[li],cy,nodeR,0,Math.PI*2);
+      ctx.fillStyle=l.color;ctx.fill();
+      ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
+      ctx.fillStyle='#fff';ctx.font=`bold ${Math.max(8,nodeR*0.55)}px monospace`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(v.toFixed(2),lx[li],cy);
+    });
+    ctx.fillStyle='#666';ctx.font='10px system-ui';ctx.textAlign='center';
+    ctx.fillText(l.name,lx[li],H-6);
+  });
+
+  // loss badge
+  ctx.fillStyle='#E24B4A';ctx.font='bold 11px system-ui';ctx.textAlign='right';
+  ctx.fillText(`Loss: ${snap.loss.toFixed(4)}`,W-4,14);
+  ctx.fillStyle='#1D9E75';
+  ctx.fillText(`Acc: ${(snap.correct/16*100).toFixed(1)}%`,W-4,28);
+}
+
+// ── Loss chart ────────────────────────────────────────────────────────────────
+function drawLoss(snap){
+  const cv=document.createElement('canvas');
+  cv.height=200;
+  const W=350,H=200,pad={l:40,r:10,t:16,b:28};
+  cv.width=W;
+  const ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const losses=SNAPS.map(s=>s.loss);
+  const minL=Math.min(...losses),maxL=Math.max(...losses);
+  const xs=i=>pad.l+(i/(losses.length-1))*(W-pad.l-pad.r);
+  const ys=v=>H-pad.b-((v-minL)/(maxL-minL+1e-9))*(H-pad.t-pad.b);
+
+  // grid
+  ctx.strokeStyle='#222';ctx.lineWidth=0.5;
+  for(let i=0;i<=4;i++){
+    const y=pad.t+i*(H-pad.t-pad.b)/4;
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
+  }
+
+  // curve
+  ctx.beginPath();
+  losses.forEach((v,i)=>{i===0?ctx.moveTo(xs(i),ys(v)):ctx.lineTo(xs(i),ys(v));});
+  ctx.strokeStyle='#185FA5';ctx.lineWidth=2;ctx.stroke();
+
+  // current position
+  const cx=xs(idx),cy=ys(losses[idx]);
+  ctx.beginPath();ctx.moveTo(cx,pad.t);ctx.lineTo(cx,H-pad.b);
+  ctx.strokeStyle='#E24B4A';ctx.lineWidth=1;ctx.setLineDash([3,2]);ctx.stroke();ctx.setLineDash([]);
+  ctx.beginPath();ctx.arc(cx,cy,4,0,Math.PI*2);ctx.fillStyle='#E24B4A';ctx.fill();
+
+  // labels
+  ctx.fillStyle='#666';ctx.font='9px monospace';ctx.textAlign='right';
+  ctx.fillText(maxL.toFixed(2),pad.l-3,pad.t+4);
+  ctx.fillText(minL.toFixed(2),pad.l-3,H-pad.b);
+  ctx.textAlign='left';ctx.fillText('Epoch 1',pad.l,H-2);
+  ctx.textAlign='right';ctx.fillText('10,000',W-pad.r,H-2);
+  ctx.textAlign='center';ctx.fillStyle='#888';ctx.font='10px system-ui';
+  ctx.fillText('Loss over training',W/2,pad.t-2);
+
+  return cv;
+}
+
+// ── Code panels ───────────────────────────────────────────────────────────────
+const FWD=[
+  {code:'z1 = np.dot(X, w1) + b1',       key:'z1',   desc:'Linear transform of input X. Pre-activation for hidden layer 1. Shape (16,4)'},
+  {code:'a1 = np.maximum(0, z1)',          key:'a1',   desc:'ReLU — negatives become 0. Adds non-linearity. Shape (16,4)'},
+  {code:'z2 = np.dot(a1, w2) + b2',       key:'z2',   desc:'Linear transform of a1. Pre-activation for hidden layer 2. Shape (16,3)'},
+  {code:'a2 = np.maximum(0, z2)',          key:'a2',   desc:'ReLU on z2. Shape (16,3)'},
+  {code:'z3 = np.dot(a2, w3) + b3',       key:'z3',   desc:'Final linear transform before output. Shape (16,1)'},
+  {code:'a3 = sigmoid(z3)',               key:'a3',   desc:'Sigmoid → probability of class 1. Shape (16,1)'},
+  {code:'loss = BCE(a3, y) / N',          key:'loss', desc:'Binary cross-entropy averaged over 16 samples.'},
+];
+const BWD=[
+  {code:'dw3 = dot(a2.T, (a3-y)) / N',   key:'dw3',  desc:'∂L/∂w3 — (a3-y) is output error, dotted with a2 via chain rule.'},
+  {code:'db3 = sum(a3-y) / N',            key:'db3',  desc:'∂L/∂b3 — average error since bias affects all samples equally.'},
+  {code:'da2 = dot((a3-y), w3.T)',        key:'da2',  desc:'Error propagated back through w3 to find a2 contribution.'},
+  {code:'dz2 = da2 * (z2 > 0)',           key:'dz2',  desc:'ReLU backward — gradient passes if z2 > 0, dies if z2 ≤ 0.'},
+  {code:'dw2 = dot(a1.T, dz2) / N',      key:'dw2',  desc:'∂L/∂w2 — a1 fed into w2 so it appears in the gradient.'},
+  {code:'da1 = dot(dz2, w2.T)',           key:'da1',  desc:'Error propagated back through w2 to layer 1.'},
+  {code:'dz1 = da1 * (z1 > 0)',           key:'dz1',  desc:'ReLU backward for layer 1.'},
+  {code:'dw1 = dot(X.T, dz1) / N',       key:'dw1',  desc:'∂L/∂w1 — uses raw X since this is the first layer.'},
+];
+
+function getVal(snap,key){
+  const m={z1:snap.z1,a1:snap.a1,z2:snap.z2,a2:snap.a2,z3:snap.z3,a3:snap.a3,dw3:snap.dw3,dw2:snap.dw2,dw1:snap.dw1,db3:[[snap.db3]],loss:[[snap.loss]]};
+  return m[key]||null;
+}
+function fmtMatrix(M){
+  if(!M) return 'computed inline — not stored';
+  return M.slice(0,5).map(r=>r.map(v=>v.toFixed(4)).join('  ')).join('\n')+(M.length>5?`\n... ${M.length-5} more rows`:'');
+}
+
+function renderCode(snap){
+  const lines=mode==='forward'?FWD:BWD;
+  let html='<div class="code-block">';
+  lines.forEach((l,i)=>{
+    html+=`<div class="code-line${i===selLine?' active':''}" onclick="selectLine(${i})">${l.code}</div>`;
+  });
+  html+=`</div><div class="desc-box">${lines[selLine].desc}</div>`;
+  const val=getVal(snap,lines[selLine].key);
+  html+=`<div class="val-box">${fmtMatrix(val)}</div>`;
+  return html;
+}
+
+function selectLine(i){selLine=i;render();}
+
+// ── Main render ───────────────────────────────────────────────────────────────
+function render(){
+  const snap=SNAPS[idx];
+  document.getElementById('epochSlider').value=idx;
+  document.getElementById('epochLabel').textContent=`${snap.ep.toLocaleString()} / 10,000`;
+  document.getElementById('mLoss').textContent=snap.loss.toFixed(4);
+  document.getElementById('mAcc').textContent=(snap.correct/16*100).toFixed(1)+'%';
+  document.getElementById('mCorrect').textContent=snap.correct;
+  document.getElementById('mEpoch').textContent=snap.ep.toLocaleString();
+  document.getElementById('mAcc').className='metric-val'+(snap.correct===16?' good':'');
+
+  drawNet(snap);
+
+  const rp=document.getElementById('rightContent');
+  const rt=document.getElementById('rightTitle');
+
+  if(mode==='loss'){
+    rt.textContent='Loss curve';
+    rp.innerHTML='';
+    const lc=drawLoss(snap);
+    lc.style.width='100%';
+    rp.appendChild(lc);
+  } else {
+    rt.textContent=mode==='forward'?'Forward pass':'Backward pass';
+    rp.innerHTML=renderCode(snap);
+  }
+}
+
+window.addEventListener('resize',()=>render());
+render();
+</script>
+</body>
+</html>
